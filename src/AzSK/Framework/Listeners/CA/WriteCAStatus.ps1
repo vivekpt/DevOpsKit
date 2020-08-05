@@ -62,7 +62,7 @@ class WriteCAStatus: ListenerBase
                 if($null -ne $props)
                 {
                     $scanSource = [RemoteReportHelper]::GetScanSource();
-                    if($scanSource -ne [ScanSource]::Runbook) { return; }                                             			                             
+                    if($scanSource -ne [ScanSource]::Runbook) { return; }                                          			                             
                     [ComplianceStateTableEntity[]] $ResourceFlatEntries = @();
                     $IsLocalComplianceStoreEnabled = [ComplianceReportHelper]::ValidateComplianceStateCaching(); 
                     $complianceData = $null;
@@ -133,8 +133,14 @@ class WriteCAStatus: ListenerBase
 				#If Scan source is in supported sources or UsePartialCommits switch is available
 				if ($currentInstance.InvocationContext.BoundParameters["UsePartialCommits"] -or ($baselineControlsDetails.SupportedSources -contains $scanSource))
 				{
-					$partialScanMngr.RemovePartialScanData();   
-				}
+                     $partialScanMngr.RemovePartialScanData();    
+                }
+                if($currentInstance.InvocationContext.BoundParameters["UsePartialCommits"] -and $scanSource -eq "CA" )
+                {
+                    [ControlStateExtension] $ControlStateExt = [ControlStateExtension]::new($Event.SourceArgs[0].SubscriptionContext, $currentInstance.InvocationContext);
+		            $ControlStateExt.Initialize($false);
+                    $ControlStateExt.TrimAttestationFile();
+                }
             }
             catch 
             {

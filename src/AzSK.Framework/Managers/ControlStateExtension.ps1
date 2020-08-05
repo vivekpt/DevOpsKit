@@ -13,7 +13,13 @@ class ControlStateExtension
 	[bool] $IsControlStateIndexerPresent = $true;
 	hidden [int] $HasControlStateReadPermissions = -1;
 	hidden [int] $HasControlStateWritePermissions = -1;
+	
 	hidden [string]	$IndexerBlobName ="Resource.index.json"
+	hidden [string] $BackupIndexerBlobName ;
+	hidden [string] $BackupIndexerBlobPrefix = "Resource.index.bk*"
+	hidden [string] $AttestationBackupSuccess = $false;
+	hidden [int] $TrimAttestationAfterDays = 1;
+	hidden [int] $PurgeAttestationbackupAfterDays = 2;
 
 	hidden [int] $retryCount = 3;
 	hidden [string] $UniqueRunId;
@@ -33,6 +39,7 @@ class ControlStateExtension
 		{
 			$this.UniqueRunId = $(Get-Date -format "yyyyMMdd_HHmmss");
 		}
+		$this.BackupIndexerBlobName = "Resource.index.bk." +  $this.UniqueRunId + ".json"
 		$this.GetAzSKControlStateContainer($CreateResourcesIfNotExists)
 		#Reset attestation index file and set attestation index file present flag to get fresh index file from storage
 		$this.ControlStateIndexer = $null;
@@ -200,24 +207,12 @@ class ControlStateExtension
 		{
 			return $false;
 		}
-		$fetchIndexFile = $false
-		if(-not $this.ControlStateIndexer -and $this.IsControlStateIndexerPresent) {
-			$fetchIndexFile = $true
-		}
-
-		if($this.IsControlStateIndexerPresent ){ 
-				$fetchIndexFile = $true
-			}
-			else{
-				$fetchIndexFile = $false
-			}
 		
 		
 		#Cache code: Fetch index file only if index file is null and it is present on storage blob
 		#if(-not $this.ControlStateIndexer -and $this.IsControlStateIndexerPresent)
-		if ($fetchIndexFile)
+		if (-not $this.ControlStateIndexer -and $this.IsControlStateIndexerPresent)
 		{
-
 			$StorageAccount = $this.AzSKStorageAccount;
 			$ContainerName = ""
 			if($null -ne $this.AzSKStorageContainer)
@@ -525,6 +520,110 @@ class ControlStateExtension
 		}		
 	}
 
+	hidden [void] TrimAttestationFile()
+	{			
+		#custommessage return --
+		##try catch 
+		##finally 
+		$TrimPeriodExceeded = $false;	
+		$IsTrimAttestationFeatureEnabled = $false;
+		$ControlSettings = [ConfigurationManager]::LoadServerConfigFile("ControlSettings.json");
+		
+		$ContainerName = [Constants]::AttestationDataContainerName;
+		
+		#return if you don't have the required state attestation configuration during the runtime evaluation
+		$AttestationContainer= Get-AzStorageContainer -Context $this.AzSKStorageAccount.Context -Name $ContainerName -ErrorAction SilentlyContinue
+        
+		if( $null -eq $this.AzSKResourceGroup -or $null -eq $this.AzSKStorageAccount -or $null -eq $AttestationContainer)
+		{			
+			return ;
+		}
+		
+		#check for write permission to create backup file and rewrite trimmed attestation json 
+		if($this.HasControlStateWritePermissions -le 0) 
+		{
+			return ##log  ;
+		}
+		
+		$StorageAccount = $this.AzSKStorageAccount;
+		$IndexFileLocalTempPath= Join-Path $([Constants]::AzSKAppFolderPath) "Temp" | Join-Path -ChildPath $this.UniqueRunId | Join-Path -ChildPath "ServerControlState"| Join-Path -ChildPath $this.IndexerBlobName;
+
+		$IsTrimAttestationFeatureEnabled = [FeatureFlightingManager]::GetFeatureStatus("EnableAttestationTrim",$($this.SubscriptionContext.SubscriptionId))		
+		
+		# return if feature flag is off
+		##ToDo: Reversal strategy to restore backup
+		if(!$IsTrimAttestationFeatureEnabled)
+		{
+			return;
+		}
+		
+		# Check if trim has been performed within period specified
+		## use timestamp for checking backup instead of lastmodified
+		$PeriodToCheckForLastTrim = [DateTime]::Now.AddDays(-$this.TrimAttestationAfterDays)
+		$BackupFileCount = (Get-AzStorageBlob -Container $ContainerName -Context $StorageAccount.Context -Blob $this.BackupIndexerBlobPrefix | Where-Object { $_.LastModified -lt $PeriodToCheckForLastTrim} | Measure-Object).Count
+		if ($BackupFileCount -gt 0 )
+		{
+			$LastBackup = Get-AzStorageBlob -Container $ContainerName -Context $StorageAccount.Context -Blob $this.BackupIndexerBlobPrefix | Sort-Object -Property LastModified -Descending|Select-Object -First 1 
+			if($LastBackup.LastModified -gt $PeriodToCheckForLastTrim)
+			{
+				$TrimPeriodExceeded = $false
+				return
+				#event  
+			}
+		}	
+		# Backup existing attestation json file with timestamp added
+		try
+		{
+			$backuptask = Start-AzStorageBlobCopy -SrcContainer $ContainerName -SrcBlob $this.IndexerBlobName -DestContainer $this.AzSKStorageContainer.Name -DestBlob $this.BackupIndexerBlobName -Context $StorageAccount.Context| Get-AzStorageBlobCopyState -WaitForComplete
+			if($backuptask.Status -eq "Success")
+			{
+				# Backup complete
+				$this.AttestationBackupSuccess = $true;
+			}	
+		}
+		catch{
+			$this.AttestationBackupSuccess = $false;
+			return
+		}		
+		
+		# Remove entries for deleted resources from Resource.index.json file
+		if($this.AttestationBackupSuccess)
+		{
+			# Fetch list of resources , avoided caching as this would be periodic trimming, not for every CA run 
+			[ResourceInventory]::FetchResources(); 
+			# Get resources list supported for scan
+			$AzSKScannableResources=[ResourceInventory]::FilteredResources;
+
+			$AzSKScannableResourceIds= $AzSKScannableResources | Select-Object -ExpandProperty ResourceId
+
+			# Fetch current attestation 
+			$ControlStateIndexerObject = $this.ComputeControlStateIndexer();
+			$resourcesWithAttestation = $this.ControlStateIndexer |Select-Object -ExpandProperty ResourceId
+			
+			$deletedResourcesWithAttestation = @();
+			$filteredIndexerObject= @();
+
+			$deletedResourcesWithAttestation = $resourcesWithAttestation| Where-Object{$AzSKScannableResourceIds -notcontains $_ -and $_ -match 'resourceGroups'} # matching with 'resourceGroups' to avoid deleting attestattion for subscription level controls
+		
+			# if any deleted resources found , having attestation for those
+			if($null -ne $deletedResourcesWithAttestation)
+			{		
+				$filteredIndexerObject = $this.ControlStateIndexer  | Where-Object {$deletedResourcesWithAttestation -notcontains $_.ResourceId}
+				# Rewrite trimmed $this.ControlStateIndexer values to Resource.index.json file
+				[JsonHelper]::ConvertToJsonCustom($filteredIndexerObject) | Out-File $IndexFileLocalTempPath -Force
+				# Upload trimmed file to storage
+				[AzHelper]::UploadStorageBlobContent($IndexFileLocalTempPath, $this.IndexerBlobName , $ContainerName, $StorageAccount.Context)
+			}
+			else{
+				#remove attestation file
+			}
+
+			# Purge old backup files
+
+			$PurgeBackupAttestationFilesBefore = [DateTime]::Now.AddDays(-$this.PurgeAttestationbackupAfterDays);
+			Get-AzStorageBlob -Container $ContainerName -Context $StorageAccount.Context -Blob "$($this.BackupIndexerBlobPrefix)" | Where-Object { $_.LastModified -lt $PurgeBackupAttestationFilesBefore} | Remove-AzStorageBlob -Force -ErrorAction SilentlyContinue			
+		}
+	}
 	hidden [ControlState[]] GetPersistedControlStates([string] $controlStateBlobName)
 	{
 		$AzSKTemp = Join-Path $([Constants]::AzSKAppFolderPath) "Temp" | Join-Path -ChildPath $this.UniqueRunId | Join-Path -ChildPath "ServerControlState";

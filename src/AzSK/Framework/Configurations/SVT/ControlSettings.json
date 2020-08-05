@@ -490,6 +490,9 @@
       "Low": 90
     }
   },
+  "AttestationTrimIntervalDays":{
+    "Days" : 30
+  },
 
   "SubscriptionCore": {
     "EnableV1AlertFailure": false,
