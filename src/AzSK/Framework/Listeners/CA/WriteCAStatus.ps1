@@ -138,8 +138,13 @@ class WriteCAStatus: ListenerBase
                 if($currentInstance.InvocationContext.BoundParameters["UsePartialCommits"] -and $scanSource -eq "CA" )
                 {
                     [ControlStateExtension] $ControlStateExt = [ControlStateExtension]::new($Event.SourceArgs[0].SubscriptionContext, $currentInstance.InvocationContext);
+                    $ControlStateExt.UniqueRunId = $currentInstance.RunIdentifier;
 		            $ControlStateExt.Initialize($false);
-                    $ControlStateExt.TrimAttestationFile();
+                    $trimAttestationEvents = $ControlStateExt.TrimAttestationFile();
+                    #Push events to AI telemetry
+                    if($trimAttestationEvents.Count -gt 0 ){
+                        [AIOrgTelemetryHelper]::TrackEvents($trimAttestationEvents);
+                    }					
                 }
             }
             catch 
