@@ -29,6 +29,17 @@
   "KubernetesService": {
     "kubernetesVersion": ["1.15.12","1.16.13" ,"1.17.9"]
   },
+  "LoadBalancer": {
+    "ControlExclusionsByService" : 
+      [
+        {
+          "ControlTag" : "ExcludeLoadBalancer",
+          "ResourceTag": "",
+          "ResourceTagValue" :"",
+          "ServiceType" : "LoadBalacner"
+        }
+     ]
+  },
   "APIManagement": {
     "AllowedIdentityProvider": [
       "Aad"

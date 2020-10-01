@@ -56,7 +56,8 @@
             "Automated",
             "NetSec",
             "LoadBalancer",
-            "ExtendedExpiry"
+            "ExtendedExpiry",
+            "ExcludeLoadBalancer"
          ],
          "Enabled": true,
          "DataObjectProperties": [

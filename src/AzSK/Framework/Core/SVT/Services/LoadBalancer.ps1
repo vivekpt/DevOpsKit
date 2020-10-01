@@ -6,15 +6,43 @@ class LoadBalancer: AzSVTBase
     LoadBalancer([string] $subscriptionId, [SVTResource] $svtResource): 
         Base($subscriptionId, $svtResource) 
     { 
-    }
+		$this.GetResourceObject();
+	}
+	[ControlItem[]] ApplyServiceFilters([ControlItem[]] $controls)
+	{
+		$result = $controls;
+		# Applying filter to exclude certain controls based on Tag Key-Value 
+		if([Helpers]::CheckMember($this.ControlSettings.LoadBalancer, "ControlExclusionsByService") -and [Helpers]::CheckMember($this.ResourceObject, "Tag")){
+			$this.ControlSettings.LoadBalancer.ControlExclusionsByService | ForEach-Object {
+				if($this.ResourceObject.Tag[$_.ResourceTag] -like $_.ResourceTagValue){
+					$controlTag = $_.ControlTag
+					$result=$result | Where-Object { $_.Tags -notcontains $controlTag };
+				}
+			}
+		}
+		return $result;
+	}
+	hidden [PSObject] GetResourceObject()
+    {
+		if (-not $this.ResourceObject) {
+            $this.ResourceObject = Get-AzLoadBalancer -ResourceGroupName $this.ResourceContext.ResourceGroupName -Name $this.ResourceContext.ResourceName  -WarningAction SilentlyContinue 
+
+            if(-not $this.ResourceObject)
+            {
+                throw ([SuppressedException]::new(("Resource '{0}' not found under Resource Group '{1}'" -f ($this.ResourceContext.ResourceName), ($this.ResourceContext.ResourceGroupName)), [SuppressedExceptionType]::InvalidOperation))
+            }
+			
+		}
+		return $this.ResourceObject;
+	}
 
 	hidden [ControlResult] CheckPublicIP([ControlResult] $controlResult)
 	{	
 		$publicIps = @();
-		$loadBalancer = Get-AzLoadBalancer -ResourceGroupName $this.ResourceContext.ResourceGroupName -Name $this.ResourceContext.ResourceName
-		if([Helpers]::CheckMember($loadBalancer,"FrontendIpConfigurations"))
+		#$loadBalancer = Get-AzLoadBalancer -ResourceGroupName $this.ResourceContext.ResourceGroupName -Name $this.ResourceContext.ResourceName
+		if([Helpers]::CheckMember($this.ResourceObject,"FrontendIpConfigurations"))
         {
-			$loadBalancer.FrontendIpConfigurations | 
+			$this.ResourceObject.FrontendIpConfigurations | 
 				ForEach-Object {
 					Set-Variable -Name feIpConfigurations -Scope Local -Value $_
 					if(($feIpConfigurations | Get-Member -Name "PublicIpAddress") -and $feIpConfigurations.PublicIpAddress)
